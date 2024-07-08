@@ -1,0 +1,22 @@
+.*
+!/.gitignore
+!.gitlab-ci.yml
+!.uuid
+!.uuid-dt
+
+logs/
+target/
+hs_err_pid*
+
+### IntelliJ IDEA ###
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+/build/
