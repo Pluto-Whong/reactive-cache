@@ -61,7 +61,7 @@ public final class ReactiveCacheBuilder<K, V> {
     };
 
     static final Scheduler DEFAULT_TIMEOUT_SCHEDULER = Schedulers.parallel();
-    static final Scheduler DEFAULT_LOADING_RESTART_SCHEDULER = Schedulers.parallel();
+    static final Scheduler DEFAULT_LOADING_RESTART_SCHEDULER = null;
 
     public static final int UNSET_INT = -1;
 

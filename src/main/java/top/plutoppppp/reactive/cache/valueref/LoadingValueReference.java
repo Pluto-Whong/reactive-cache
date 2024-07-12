@@ -11,6 +11,7 @@ import top.plutoppppp.reactive.cache.entry.ReferenceEntry;
 import java.lang.ref.ReferenceQueue;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BiConsumer;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static top.plutoppppp.reactive.cache.ReactiveLocalCache.unset;
@@ -91,13 +92,22 @@ public class LoadingValueReference<K, V> implements ValueReference<K, V> {
 
     @Override
     public void waitForValue(MonoSink<V> sink, Scheduler scheduler) {
-        futureValue.whenComplete((v, e) -> {
+        final BiConsumer<V, ? super Throwable> action = (v, e) -> {
             if (Objects.nonNull(e)) {
-                scheduler.schedule(() -> sink.error(e));
+                sink.error(e);
             } else {
-                scheduler.schedule(() -> sink.success(v));
+                sink.success(v);
             }
-        });
+        };
+
+        BiConsumer<V, ? super Throwable> realAction;
+        if (Objects.nonNull(scheduler)) {
+            realAction = (v, e) -> scheduler.schedule(() -> action.accept(v, e));
+        } else {
+            realAction = action;
+        }
+
+        futureValue.whenComplete(realAction);
     }
 
     public ValueReference<K, V> getOldValue() {

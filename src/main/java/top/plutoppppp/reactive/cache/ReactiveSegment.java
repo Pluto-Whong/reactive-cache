@@ -1,10 +1,13 @@
 package top.plutoppppp.reactive.cache;
 
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import top.plutoppppp.reactive.cache.entry.ReferenceEntry;
 import top.plutoppppp.reactive.cache.exception.InvalidCacheLoadException;
 import top.plutoppppp.reactive.cache.listener.RemovalCause;
 import top.plutoppppp.reactive.cache.listener.RemovalNotification;
+import top.plutoppppp.reactive.cache.lock.MonoReentrantLock;
 import top.plutoppppp.reactive.cache.queue.AccessQueue;
 import top.plutoppppp.reactive.cache.queue.WriteQueue;
 import top.plutoppppp.reactive.cache.stats.StatsCounter;
@@ -14,11 +17,11 @@ import top.plutoppppp.reactive.cache.valueref.ValueReference;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -30,9 +33,11 @@ import static top.plutoppppp.reactive.cache.common.Assert.checkState;
  * Segments are specialized versions of hash tables. This subclass inherits from ReentrantLock
  * opportunistically, just to simplify some locking and avoid separate construction.
  */
-public class ReactiveSegment<K, V> extends ReentrantLock {
+public class ReactiveSegment<K, V> {
 
     private static final Logger logger = Logger.getLogger(ReactiveSegment.class.getName());
+
+    private final MonoReentrantLock lock = new MonoReentrantLock();
 
     final ReactiveLocalCache<K, V> map;
 
@@ -230,82 +235,83 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
     }
 
     Mono<V> lockedGetOrLoad(K key, int hash, ReactiveCacheLoader<? super K, V> loader) {
-        ReferenceEntry<K, V> e;
-        ValueReference<K, V> valueReference = null;
-        LoadingValueReference<K, V> loadingValueReference = null;
-        boolean createNewEntry = true;
+        return lock.lock(holder -> {
+            ReferenceEntry<K, V> e;
+            ValueReference<K, V> valueReference = null;
+            LoadingValueReference<K, V> loadingValueReference = null;
+            boolean createNewEntry = true;
 
-        lock();
-        try {
-            // re-read ticker once inside the lock
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+            try {
+                // re-read ticker once inside the lock
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            int newCount = this.count - 1;
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+                int newCount = this.count - 1;
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            for (e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    valueReference = e.getValueReference();
-                    if (valueReference.isLoading()) {
-                        createNewEntry = false;
-                    } else {
-                        V value = valueReference.get();
-                        if (value == null) {
-                            enqueueNotification(
-                                    entryKey, hash, null, valueReference.getWeight(), RemovalCause.COLLECTED);
-                        } else if (map.isExpired(e, now)) {
-                            // This is a duplicate check, as preWriteCleanup already purged expired
-                            // entries, but let's accomodate an incorrect expiration queue.
-                            enqueueNotification(
-                                    entryKey, hash, value, valueReference.getWeight(), RemovalCause.EXPIRED);
+                for (e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        valueReference = e.getValueReference();
+                        if (valueReference.isLoading()) {
+                            createNewEntry = false;
                         } else {
-                            recordLockedRead(e, now);
-                            statsCounter.recordHits(1);
-                            // we were concurrent with loading; don't consider refresh
-                            return Mono.just(value);
-                        }
+                            V value = valueReference.get();
+                            if (value == null) {
+                                enqueueNotification(
+                                        entryKey, hash, null, valueReference.getWeight(), RemovalCause.COLLECTED);
+                            } else if (map.isExpired(e, now)) {
+                                // This is a duplicate check, as preWriteCleanup already purged expired
+                                // entries, but let's accomodate an incorrect expiration queue.
+                                enqueueNotification(
+                                        entryKey, hash, value, valueReference.getWeight(), RemovalCause.EXPIRED);
+                            } else {
+                                recordLockedRead(e, now);
+                                statsCounter.recordHits(1);
+                                // we were concurrent with loading; don't consider refresh
+                                return Mono.just(value);
+                            }
 
-                        // immediately reuse invalid entries
-                        writeQueue.remove(e);
-                        accessQueue.remove(e);
-                        this.count = newCount; // write-volatile
+                            // immediately reuse invalid entries
+                            writeQueue.remove(e);
+                            accessQueue.remove(e);
+                            this.count = newCount; // write-volatile
+                        }
+                        break;
                     }
-                    break;
                 }
+
+                if (createNewEntry) {
+                    loadingValueReference = new LoadingValueReference<>();
+
+                    if (e == null) {
+                        e = newEntry(key, hash, first);
+                        e.setValueReference(loadingValueReference);
+                        table.set(index, e);
+                    } else {
+                        e.setValueReference(loadingValueReference);
+                    }
+                }
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
             }
 
             if (createNewEntry) {
-                loadingValueReference = new LoadingValueReference<>();
-
-                if (e == null) {
-                    e = newEntry(key, hash, first);
-                    e.setValueReference(loadingValueReference);
-                    table.set(index, e);
-                } else {
-                    e.setValueReference(loadingValueReference);
+                try {
+                    return loadSync(key, hash, loadingValueReference, loader);
+                } finally {
+                    statsCounter.recordMisses(1);
                 }
+            } else {
+                // The entry already exists. Wait for loading.
+                return waitForLoadingValue(e, key, valueReference);
             }
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
-
-        if (createNewEntry) {
-            try {
-                return loadSync(key, hash, loadingValueReference, loader);
-            } finally {
-                statsCounter.recordMisses(1);
-            }
-        } else {
-            // The entry already exists. Wait for loading.
-            return waitForLoadingValue(e, key, valueReference);
-        }
+        });
     }
 
     Mono<V> waitForLoadingValue(ReferenceEntry<K, V> e, K key, ValueReference<K, V> valueReference) {
@@ -349,7 +355,9 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
             final int hash,
             final LoadingValueReference<K, V> loadingValueReference,
             ReactiveCacheLoader<? super K, V> loader) {
-        Mono<V> loadingMono = loadingValueReference.loadFuture(key, loader, map.loadingRestartScheduler);
+        Scheduler loadingRestartScheduler = Objects.nonNull(map.loadingRestartScheduler) ? map.loadingRestartScheduler : Schedulers.parallel();
+
+        Mono<V> loadingMono = loadingValueReference.loadFuture(key, loader, loadingRestartScheduler);
         getAndRecordStats(key, hash, loadingValueReference, loadingMono)
                 .onErrorResume(e -> {
                     logger.log(Level.WARNING, "Exception thrown during refresh", e);
@@ -368,12 +376,14 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
                 .switchIfEmpty(Mono.error(() ->
                         new InvalidCacheLoadException("ReactiveCacheLoader returned null")
                 ))
-                .doOnNext(value -> {
+                .flatMap(value -> {
                     statsCounter.recordLoadSuccess(loadingValueReference.elapsedNanos());
-                    storeLoadedValue(key, hash, loadingValueReference, value);
-                }).doOnError(e -> {
+                    return storeLoadedValue(key, hash, loadingValueReference, value)
+                            .thenReturn(value);
+                })
+                .onErrorResume(e -> {
                     statsCounter.recordLoadException(loadingValueReference.elapsedNanos());
-                    removeLoadingValue(key, hash, loadingValueReference);
+                    return removeLoadingValue(key, hash, loadingValueReference).then(Mono.error(e));
                 });
     }
 
@@ -397,12 +407,10 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
      * refresh.
      */
     void refresh(K key, int hash, ReactiveCacheLoader<? super K, V> loader, boolean checkTime) {
-        final LoadingValueReference<K, V> loadingValueReference = insertLoadingValueReference(key, hash, checkTime);
-        if (loadingValueReference == null) {
-            return;
-        }
-
-        loadAsync(key, hash, loadingValueReference, loader);
+        insertLoadingValueReference(key, hash, checkTime)
+                .subscribe(loadingValueReference -> {
+                    loadAsync(key, hash, loadingValueReference, loader);
+                });
     }
 
     /**
@@ -410,54 +418,55 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
      * is already loading.
      */
 
-    LoadingValueReference<K, V> insertLoadingValueReference(
+    Mono<LoadingValueReference<K, V>> insertLoadingValueReference(
             final K key, final int hash, boolean checkTime) {
-        ReferenceEntry<K, V> e;
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+        return lock.lock(holder -> {
+            ReferenceEntry<K, V> e;
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            // Look for an existing entry.
-            for (e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    // We found an existing entry.
+                // Look for an existing entry.
+                for (e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        // We found an existing entry.
 
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    if (valueReference.isLoading()
-                            || (checkTime && (now - e.getWriteTime() < map.refreshNanos))) {
-                        // refresh is a no-op if loading is pending
-                        // if checkTime, we want to check *after* acquiring the lock if refresh still needs
-                        // to be scheduled
-                        return null;
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        if (valueReference.isLoading()
+                                || (checkTime && (now - e.getWriteTime() < map.refreshNanos))) {
+                            // refresh is a no-op if loading is pending
+                            // if checkTime, we want to check *after* acquiring the lock if refresh still needs
+                            // to be scheduled
+                            return Mono.empty();
+                        }
+
+                        // continue returning old value while loading
+                        ++modCount;
+                        LoadingValueReference<K, V> loadingValueReference =
+                                new LoadingValueReference<>(valueReference);
+                        e.setValueReference(loadingValueReference);
+                        return Mono.just(loadingValueReference);
                     }
-
-                    // continue returning old value while loading
-                    ++modCount;
-                    LoadingValueReference<K, V> loadingValueReference =
-                            new LoadingValueReference<>(valueReference);
-                    e.setValueReference(loadingValueReference);
-                    return loadingValueReference;
                 }
-            }
 
-            ++modCount;
-            LoadingValueReference<K, V> loadingValueReference = new LoadingValueReference<>();
-            e = newEntry(key, hash, first);
-            e.setValueReference(loadingValueReference);
-            table.set(index, e);
-            return loadingValueReference;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+                ++modCount;
+                LoadingValueReference<K, V> loadingValueReference = new LoadingValueReference<>();
+                e = newEntry(key, hash, first);
+                e.setValueReference(loadingValueReference);
+                table.set(index, e);
+                return Mono.just(loadingValueReference);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
     // reference queues, for garbage collection cleanup
@@ -466,13 +475,13 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
      * Cleanup collected entries when the lock is available.
      */
     void tryDrainReferenceQueues() {
-        if (tryLock()) {
+        lock.tryLock(holder -> {
             try {
                 drainReferenceQueues();
             } finally {
-                unlock();
+                holder.unlock();
             }
-        }
+        });
     }
 
     /**
@@ -615,14 +624,14 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
      * Cleanup expired entries when the lock is available.
      */
     void tryExpireEntries(long now) {
-        if (tryLock()) {
+        lock.tryLock(holder -> {
             try {
                 expireEntries(now);
             } finally {
-                unlock();
+                holder.unlock();
                 // don't call postWriteCleanup as we're in a read
             }
-        }
+        });
     }
 
     void expireEntries(long now) {
@@ -830,77 +839,78 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
     }
 
 
-    V put(K key, int hash, V value, boolean onlyIfAbsent) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+    Mono<V> put(K key, int hash, V value, boolean onlyIfAbsent) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            int newCount = this.count + 1;
-            if (newCount > this.threshold) { // ensure capacity
-                expand();
-            }
+                int newCount = this.count + 1;
+                if (newCount > this.threshold) { // ensure capacity
+                    expand();
+                }
 
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            // Look for an existing entry.
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    // We found an existing entry.
+                // Look for an existing entry.
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        // We found an existing entry.
 
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
 
-                    if (entryValue == null) {
-                        ++modCount;
-                        if (valueReference.isActive()) {
-                            enqueueNotification(
-                                    key, hash, null, valueReference.getWeight(), RemovalCause.COLLECTED);
-                            setValue(e, key, value, now);
-                            newCount = this.count; // count remains unchanged
+                        if (entryValue == null) {
+                            ++modCount;
+                            if (valueReference.isActive()) {
+                                enqueueNotification(
+                                        key, hash, null, valueReference.getWeight(), RemovalCause.COLLECTED);
+                                setValue(e, key, value, now);
+                                newCount = this.count; // count remains unchanged
+                            } else {
+                                setValue(e, key, value, now);
+                                newCount = this.count + 1;
+                            }
+                            this.count = newCount; // write-volatile
+                            evictEntries(e);
+                            return Mono.empty();
+                        } else if (onlyIfAbsent) {
+                            // Mimic
+                            // "if (!map.containsKey(key)) ...
+                            // else return map.get(key);
+                            recordLockedRead(e, now);
+                            return Mono.just(entryValue);
                         } else {
+                            // clobber existing entry, count remains unchanged
+                            ++modCount;
+                            enqueueNotification(
+                                    key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
                             setValue(e, key, value, now);
-                            newCount = this.count + 1;
+                            evictEntries(e);
+                            return Mono.just(entryValue);
                         }
-                        this.count = newCount; // write-volatile
-                        evictEntries(e);
-                        return null;
-                    } else if (onlyIfAbsent) {
-                        // Mimic
-                        // "if (!map.containsKey(key)) ...
-                        // else return map.get(key);
-                        recordLockedRead(e, now);
-                        return entryValue;
-                    } else {
-                        // clobber existing entry, count remains unchanged
-                        ++modCount;
-                        enqueueNotification(
-                                key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
-                        setValue(e, key, value, now);
-                        evictEntries(e);
-                        return entryValue;
                     }
                 }
-            }
 
-            // Create a new entry.
-            ++modCount;
-            ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
-            setValue(newEntry, key, value, now);
-            table.set(index, newEntry);
-            newCount = this.count + 1;
-            this.count = newCount; // write-volatile
-            evictEntries(newEntry);
-            return null;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+                // Create a new entry.
+                ++modCount;
+                ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
+                setValue(newEntry, key, value, now);
+                table.set(index, newEntry);
+                newCount = this.count + 1;
+                this.count = newCount; // write-volatile
+                evictEntries(newEntry);
+                return Mono.empty();
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
     /**
@@ -975,310 +985,317 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
         this.count = newCount;
     }
 
-    boolean replace(K key, int hash, V oldValue, V newValue) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+    Mono<Boolean> replace(K key, int hash, V oldValue, V newValue) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
-                    if (entryValue == null) {
-                        if (valueReference.isActive()) {
-                            // If the value disappeared, this entry is partially collected.
-                            int newCount;
-                            ++modCount;
-                            ReferenceEntry<K, V> newFirst =
-                                    removeValueFromChain(
-                                            first,
-                                            e,
-                                            entryKey,
-                                            hash,
-                                            null,
-                                            valueReference,
-                                            RemovalCause.COLLECTED);
-                            newCount = this.count - 1;
-                            table.set(index, newFirst);
-                            this.count = newCount; // write-volatile
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
+                        if (entryValue == null) {
+                            if (valueReference.isActive()) {
+                                // If the value disappeared, this entry is partially collected.
+                                int newCount;
+                                ++modCount;
+                                ReferenceEntry<K, V> newFirst =
+                                        removeValueFromChain(
+                                                first,
+                                                e,
+                                                entryKey,
+                                                hash,
+                                                null,
+                                                valueReference,
+                                                RemovalCause.COLLECTED);
+                                newCount = this.count - 1;
+                                table.set(index, newFirst);
+                                this.count = newCount; // write-volatile
+                            }
+                            return Mono.just(false);
                         }
-                        return false;
-                    }
 
-                    if (map.valueEquivalence.equivalent(oldValue, entryValue)) {
+                        if (map.valueEquivalence.equivalent(oldValue, entryValue)) {
+                            ++modCount;
+                            enqueueNotification(
+                                    key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
+                            setValue(e, key, newValue, now);
+                            evictEntries(e);
+                            return Mono.just(true);
+                        } else {
+                            // Mimic
+                            // "if (map.containsKey(key) && map.get(key).equals(oldValue))..."
+                            recordLockedRead(e, now);
+                            return Mono.just(false);
+                        }
+                    }
+                }
+
+                return Mono.just(false);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
+
+    }
+
+
+    Mono<V> replace(K key, int hash, V newValue) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
+
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
+
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
+                        if (entryValue == null) {
+                            if (valueReference.isActive()) {
+                                // If the value disappeared, this entry is partially collected.
+                                int newCount;
+                                ++modCount;
+                                ReferenceEntry<K, V> newFirst =
+                                        removeValueFromChain(
+                                                first,
+                                                e,
+                                                entryKey,
+                                                hash,
+                                                null,
+                                                valueReference,
+                                                RemovalCause.COLLECTED);
+                                newCount = this.count - 1;
+                                table.set(index, newFirst);
+                                this.count = newCount; // write-volatile
+                            }
+                            return Mono.empty();
+                        }
+
                         ++modCount;
                         enqueueNotification(
                                 key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
                         setValue(e, key, newValue, now);
                         evictEntries(e);
-                        return true;
-                    } else {
-                        // Mimic
-                        // "if (map.containsKey(key) && map.get(key).equals(oldValue))..."
-                        recordLockedRead(e, now);
-                        return false;
+                        return Mono.just(entryValue);
                     }
                 }
-            }
 
-            return false;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+                return Mono.empty();
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
 
-    V replace(K key, int hash, V newValue) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+    Mono<V> remove(Object key, int hash) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+                int newCount;
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
-                    if (entryValue == null) {
-                        if (valueReference.isActive()) {
-                            // If the value disappeared, this entry is partially collected.
-                            int newCount;
-                            ++modCount;
-                            ReferenceEntry<K, V> newFirst =
-                                    removeValueFromChain(
-                                            first,
-                                            e,
-                                            entryKey,
-                                            hash,
-                                            null,
-                                            valueReference,
-                                            RemovalCause.COLLECTED);
-                            newCount = this.count - 1;
-                            table.set(index, newFirst);
-                            this.count = newCount; // write-volatile
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
+
+                        RemovalCause cause;
+                        if (entryValue != null) {
+                            cause = RemovalCause.EXPLICIT;
+                        } else if (valueReference.isActive()) {
+                            cause = RemovalCause.COLLECTED;
+                        } else {
+                            // currently loading
+                            return Mono.empty();
                         }
-                        return null;
-                    }
 
-                    ++modCount;
-                    enqueueNotification(
-                            key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
-                    setValue(e, key, newValue, now);
-                    evictEntries(e);
-                    return entryValue;
-                }
-            }
-
-            return null;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
-    }
-
-
-    V remove(Object key, int hash) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
-
-            int newCount;
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
-
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
-
-                    RemovalCause cause;
-                    if (entryValue != null) {
-                        cause = RemovalCause.EXPLICIT;
-                    } else if (valueReference.isActive()) {
-                        cause = RemovalCause.COLLECTED;
-                    } else {
-                        // currently loading
-                        return null;
-                    }
-
-                    ++modCount;
-                    ReferenceEntry<K, V> newFirst =
-                            removeValueFromChain(first, e, entryKey, hash, entryValue, valueReference, cause);
-                    newCount = this.count - 1;
-                    table.set(index, newFirst);
-                    this.count = newCount; // write-volatile
-                    return entryValue;
-                }
-            }
-
-            return null;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
-    }
-
-    boolean storeLoadedValue(
-            K key, int hash, LoadingValueReference<K, V> oldValueReference, V newValue) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
-
-            int newCount = this.count + 1;
-            if (newCount > this.threshold) { // ensure capacity
-                expand();
-                newCount = this.count + 1;
-            }
-
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
-
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
-                    // replace the old LoadingValueReference if it's live, otherwise
-                    // perform a putIfAbsent
-                    if (oldValueReference == valueReference
-                            || (entryValue == null && valueReference != UNSET)) {
                         ++modCount;
-                        if (oldValueReference.isActive()) {
-                            RemovalCause cause =
-                                    (entryValue == null) ? RemovalCause.COLLECTED : RemovalCause.REPLACED;
-                            enqueueNotification(key, hash, entryValue, oldValueReference.getWeight(), cause);
-                            newCount--;
-                        }
-                        setValue(e, key, newValue, now);
+                        ReferenceEntry<K, V> newFirst =
+                                removeValueFromChain(first, e, entryKey, hash, entryValue, valueReference, cause);
+                        newCount = this.count - 1;
+                        table.set(index, newFirst);
                         this.count = newCount; // write-volatile
-                        evictEntries(e);
-                        return true;
+                        return Mono.just(entryValue);
                     }
-
-                    // the loaded value was already clobbered
-                    enqueueNotification(key, hash, newValue, 0, RemovalCause.REPLACED);
-                    return false;
                 }
-            }
 
-            ++modCount;
-            ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
-            setValue(newEntry, key, newValue, now);
-            table.set(index, newEntry);
-            this.count = newCount; // write-volatile
-            evictEntries(newEntry);
-            return true;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+                return Mono.empty();
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
-    boolean remove(Object key, int hash, Object value) {
-        lock();
-        try {
-            long now = map.ticker.read();
-            preWriteCleanup(now);
+    Mono<Boolean> storeLoadedValue(
+            K key, int hash, LoadingValueReference<K, V> oldValueReference, V newValue) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
 
-            int newCount;
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
-
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> valueReference = e.getValueReference();
-                    V entryValue = valueReference.get();
-
-                    RemovalCause cause;
-                    if (map.valueEquivalence.equivalent(value, entryValue)) {
-                        cause = RemovalCause.EXPLICIT;
-                    } else if (entryValue == null && valueReference.isActive()) {
-                        cause = RemovalCause.COLLECTED;
-                    } else {
-                        // currently loading
-                        return false;
-                    }
-
-                    ++modCount;
-                    ReferenceEntry<K, V> newFirst =
-                            removeValueFromChain(first, e, entryKey, hash, entryValue, valueReference, cause);
-                    newCount = this.count - 1;
-                    table.set(index, newFirst);
-                    this.count = newCount; // write-volatile
-                    return (cause == RemovalCause.EXPLICIT);
+                int newCount = this.count + 1;
+                if (newCount > this.threshold) { // ensure capacity
+                    expand();
+                    newCount = this.count + 1;
                 }
-            }
 
-            return false;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
+
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
+                        // replace the old LoadingValueReference if it's live, otherwise
+                        // perform a putIfAbsent
+                        if (oldValueReference == valueReference
+                                || (entryValue == null && valueReference != UNSET)) {
+                            ++modCount;
+                            if (oldValueReference.isActive()) {
+                                RemovalCause cause =
+                                        (entryValue == null) ? RemovalCause.COLLECTED : RemovalCause.REPLACED;
+                                enqueueNotification(key, hash, entryValue, oldValueReference.getWeight(), cause);
+                                newCount--;
+                            }
+                            setValue(e, key, newValue, now);
+                            this.count = newCount; // write-volatile
+                            evictEntries(e);
+                            return Mono.just(true);
+                        }
+
+                        // the loaded value was already clobbered
+                        enqueueNotification(key, hash, newValue, 0, RemovalCause.REPLACED);
+                        return Mono.just(false);
+                    }
+                }
+
+                ++modCount;
+                ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
+                setValue(newEntry, key, newValue, now);
+                table.set(index, newEntry);
+                this.count = newCount; // write-volatile
+                evictEntries(newEntry);
+                return Mono.just(true);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
+    }
+
+    Mono<Boolean> remove(Object key, int hash, Object value) {
+        return lock.lock(holder -> {
+            try {
+                long now = map.ticker.read();
+                preWriteCleanup(now, holder);
+
+                int newCount;
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
+
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> valueReference = e.getValueReference();
+                        V entryValue = valueReference.get();
+
+                        RemovalCause cause;
+                        if (map.valueEquivalence.equivalent(value, entryValue)) {
+                            cause = RemovalCause.EXPLICIT;
+                        } else if (entryValue == null && valueReference.isActive()) {
+                            cause = RemovalCause.COLLECTED;
+                        } else {
+                            // currently loading
+                            return Mono.just(false);
+                        }
+
+                        ++modCount;
+                        ReferenceEntry<K, V> newFirst =
+                                removeValueFromChain(first, e, entryKey, hash, entryValue, valueReference, cause);
+                        newCount = this.count - 1;
+                        table.set(index, newFirst);
+                        this.count = newCount; // write-volatile
+                        return Mono.just(cause == RemovalCause.EXPLICIT);
+                    }
+                }
+
+                return Mono.just(false);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
     void clear() {
         if (count != 0) { // read-volatile
-            lock();
-            try {
-                long now = map.ticker.read();
-                preWriteCleanup(now);
+            lock.lock(holder -> {
+                try {
+                    long now = map.ticker.read();
+                    preWriteCleanup(now, holder);
 
-                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-                for (int i = 0; i < table.length(); ++i) {
-                    for (ReferenceEntry<K, V> e = table.get(i); e != null; e = e.getNext()) {
-                        // Loading references aren't actually in the map yet.
-                        if (e.getValueReference().isActive()) {
-                            K key = e.getKey();
-                            V value = e.getValueReference().get();
-                            RemovalCause cause =
-                                    (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
-                            enqueueNotification(
-                                    key, e.getHash(), value, e.getValueReference().getWeight(), cause);
+                    AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                    for (int i = 0; i < table.length(); ++i) {
+                        for (ReferenceEntry<K, V> e = table.get(i); e != null; e = e.getNext()) {
+                            // Loading references aren't actually in the map yet.
+                            if (e.getValueReference().isActive()) {
+                                K key = e.getKey();
+                                V value = e.getValueReference().get();
+                                RemovalCause cause =
+                                        (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
+                                enqueueNotification(
+                                        key, e.getHash(), value, e.getValueReference().getWeight(), cause);
+                            }
                         }
                     }
-                }
-                for (int i = 0; i < table.length(); ++i) {
-                    table.set(i, null);
-                }
-                clearReferenceQueues();
-                writeQueue.clear();
-                accessQueue.clear();
-                readCount.set(0);
+                    for (int i = 0; i < table.length(); ++i) {
+                        table.set(i, null);
+                    }
+                    clearReferenceQueues();
+                    writeQueue.clear();
+                    accessQueue.clear();
+                    readCount.set(0);
 
-                ++modCount;
-                count = 0; // write-volatile
-            } finally {
-                unlock();
-                postWriteCleanup();
-            }
+                    ++modCount;
+                    count = 0; // write-volatile
+                } finally {
+                    holder.unlock();
+                    postWriteCleanup(holder);
+                }
+            }).subscribe();
         }
     }
 
@@ -1336,117 +1353,120 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
     /**
      * Removes an entry whose key has been garbage collected.
      */
-    boolean reclaimKey(ReferenceEntry<K, V> entry, int hash) {
-        lock();
-        try {
-            int newCount;
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+    Mono<Boolean> reclaimKey(ReferenceEntry<K, V> entry, int hash) {
+        return lock.lock(holder -> {
+            try {
+                int newCount;
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                if (e == entry) {
-                    ++modCount;
-                    ReferenceEntry<K, V> newFirst =
-                            removeValueFromChain(
-                                    first,
-                                    e,
-                                    e.getKey(),
-                                    hash,
-                                    e.getValueReference().get(),
-                                    e.getValueReference(),
-                                    RemovalCause.COLLECTED);
-                    newCount = this.count - 1;
-                    table.set(index, newFirst);
-                    this.count = newCount; // write-volatile
-                    return true;
-                }
-            }
-
-            return false;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
-    }
-
-    /**
-     * Removes an entry whose value has been garbage collected.
-     */
-    boolean reclaimValue(K key, int hash, ValueReference<K, V> valueReference) {
-        lock();
-        try {
-            int newCount;
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
-
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> v = e.getValueReference();
-                    if (v == valueReference) {
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    if (e == entry) {
                         ++modCount;
                         ReferenceEntry<K, V> newFirst =
                                 removeValueFromChain(
                                         first,
                                         e,
-                                        entryKey,
+                                        e.getKey(),
                                         hash,
-                                        valueReference.get(),
-                                        valueReference,
+                                        e.getValueReference().get(),
+                                        e.getValueReference(),
                                         RemovalCause.COLLECTED);
                         newCount = this.count - 1;
                         table.set(index, newFirst);
                         this.count = newCount; // write-volatile
-                        return true;
+                        return Mono.just(true);
                     }
-                    return false;
                 }
-            }
 
-            return false;
-        } finally {
-            unlock();
-            if (!isHeldByCurrentThread()) { // don't clean up inside of put
-                postWriteCleanup();
+                return Mono.just(false);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
             }
-        }
+        });
     }
 
-    boolean removeLoadingValue(K key, int hash, LoadingValueReference<K, V> valueReference) {
-        lock();
-        try {
-            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-            int index = hash & (table.length() - 1);
-            ReferenceEntry<K, V> first = table.get(index);
+    /**
+     * Removes an entry whose value has been garbage collected.
+     */
+    Mono<Boolean> reclaimValue(K key, int hash, ValueReference<K, V> valueReference) {
+        return lock.lock(holder -> {
+            try {
+                int newCount;
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
 
-            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-                K entryKey = e.getKey();
-                if (e.getHash() == hash
-                        && entryKey != null
-                        && map.keyEquivalence.equivalent(key, entryKey)) {
-                    ValueReference<K, V> v = e.getValueReference();
-                    if (v == valueReference) {
-                        if (valueReference.isActive()) {
-                            e.setValueReference(valueReference.getOldValue());
-                        } else {
-                            ReferenceEntry<K, V> newFirst = removeEntryFromChain(first, e);
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> v = e.getValueReference();
+                        if (v == valueReference) {
+                            ++modCount;
+                            ReferenceEntry<K, V> newFirst =
+                                    removeValueFromChain(
+                                            first,
+                                            e,
+                                            entryKey,
+                                            hash,
+                                            valueReference.get(),
+                                            valueReference,
+                                            RemovalCause.COLLECTED);
+                            newCount = this.count - 1;
                             table.set(index, newFirst);
+                            this.count = newCount; // write-volatile
+                            return Mono.just(true);
                         }
-                        return true;
+                        return Mono.just(false);
                     }
-                    return false;
+                }
+
+                return Mono.just(false);
+            } finally {
+                holder.unlock();
+                if (!lock.isHeldByCurrentChain(holder)) { // don't clean up inside of put
+                    postWriteCleanup(holder);
                 }
             }
+        });
+    }
 
-            return false;
-        } finally {
-            unlock();
-            postWriteCleanup();
-        }
+    Mono<Boolean> removeLoadingValue(K key, int hash, LoadingValueReference<K, V> valueReference) {
+        return lock.lock(holder -> {
+            try {
+                AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+                int index = hash & (table.length() - 1);
+                ReferenceEntry<K, V> first = table.get(index);
+
+                for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                    K entryKey = e.getKey();
+                    if (e.getHash() == hash
+                            && entryKey != null
+                            && map.keyEquivalence.equivalent(key, entryKey)) {
+                        ValueReference<K, V> v = e.getValueReference();
+                        if (v == valueReference) {
+                            if (valueReference.isActive()) {
+                                e.setValueReference(valueReference.getOldValue());
+                            } else {
+                                ReferenceEntry<K, V> newFirst = removeEntryFromChain(first, e);
+                                table.set(index, newFirst);
+                            }
+                            return Mono.just(true);
+                        }
+                        return Mono.just(false);
+                    }
+                }
+
+                return Mono.just(false);
+            } finally {
+                holder.unlock();
+                postWriteCleanup(holder);
+            }
+        });
     }
 
 
@@ -1495,38 +1515,38 @@ public class ReactiveSegment<K, V> extends ReentrantLock {
      * <p>Post-condition: expireEntries has been run.
      */
 
-    void preWriteCleanup(long now) {
-        runLockedCleanup(now);
+    void preWriteCleanup(long now, MonoReentrantLock.LockHolder lockHolder) {
+        runLockedCleanup(now, lockHolder);
     }
 
     /**
      * Performs routine cleanup following a write.
      */
-    void postWriteCleanup() {
-        runUnlockedCleanup();
+    void postWriteCleanup(MonoReentrantLock.LockHolder lockHolder) {
+        runUnlockedCleanup(lockHolder);
     }
 
     void cleanUp() {
         long now = map.ticker.read();
-        runLockedCleanup(now);
-        runUnlockedCleanup();
+        runLockedCleanup(now, null);
+        runUnlockedCleanup(null);
     }
 
-    void runLockedCleanup(long now) {
-        if (tryLock()) {
+    void runLockedCleanup(long now, MonoReentrantLock.LockHolder lockHolder) {
+        lock.tryLock(holder -> {
             try {
                 drainReferenceQueues();
                 expireEntries(now); // calls drainRecencyQueue
                 readCount.set(0);
             } finally {
-                unlock();
+                holder.unlock();
             }
-        }
+        }, lockHolder);
     }
 
-    void runUnlockedCleanup() {
+    void runUnlockedCleanup(MonoReentrantLock.LockHolder lockHolder) {
         // locked cleanup may generate notifications we can send unlocked
-        if (!isHeldByCurrentThread()) {
+        if (!lock.isHeldByCurrentChain(lockHolder)) {
             map.processPendingNotifications();
         }
     }

@@ -20,7 +20,8 @@
    > 2. timeoutScheduler（结合 loadingTimeout 使用，因 reactor 事件切换是靠 Scheduler 实现的）；
    > 3. loadingRestartScheduler（这是重写的策略，也是实现 refresh 与 reactor 结合的重点实现方法；
         waitForLoadingValue 的实现是靠 Mono.create(sink) 保存sink，在加载完成时 调用 sink.success(v) 或 sink.error(e) 实现；
-        这两个方法调用时，若没有使用 另外的线程调用 会在当前线程执行， 则可能会出现主加载线程被长时间饥饿，且其他的并发等待的线程会成为有序加载）
+        这两个方法调用时，若没有使用 另外的线程调用 会在当前线程执行， 则可能会出现主加载线程被长时间饥饿，且其他的并发等待的线程会成为有序加载，
+        默认为null，本着reactor为反应链模式，如果遇到长时间非阻塞IO时会自己切线程的）
 
 ## 使用方法
 

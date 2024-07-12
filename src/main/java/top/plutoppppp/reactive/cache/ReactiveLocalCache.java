@@ -438,12 +438,12 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     void reclaimValue(ValueReference<K, V> valueReference) {
         ReferenceEntry<K, V> entry = valueReference.getEntry();
         int hash = entry.getHash();
-        segmentFor(hash).reclaimValue(entry.getKey(), hash, valueReference);
+        segmentFor(hash).reclaimValue(entry.getKey(), hash, valueReference).subscribe();
     }
 
     void reclaimKey(ReferenceEntry<K, V> entry) {
         int hash = entry.getHash();
-        segmentFor(hash).reclaimKey(entry, hash);
+        segmentFor(hash).reclaimKey(entry, hash).subscribe();
     }
 
     /**
@@ -731,8 +731,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {
                     int hash = hash(key);
-                    V oldValue = segmentFor(hash).put(key, hash, v, false);
-                    return Mono.justOrEmpty(oldValue);
+                    return segmentFor(hash).put(key, hash, v, false);
                 });
     }
 
@@ -744,8 +743,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {
                     int hash = hash(key);
-                    V oldValue = segmentFor(hash).put(key, hash, v, true);
-                    return Mono.justOrEmpty(oldValue);
+                    return segmentFor(hash).put(key, hash, v, true);
                 });
     }
 
@@ -762,8 +760,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
             return null;
         }
         int hash = hash(key);
-        V remove = segmentFor(hash).remove(key, hash);
-        return Mono.justOrEmpty(remove);
+        return segmentFor(hash).remove(key, hash);
     }
 
     @Override
@@ -772,7 +769,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
             return false;
         }
         int hash = hash(key);
-        return segmentFor(hash).remove(key, hash, value);
+        return segmentFor(hash).remove(key, hash, value).block();
     }
 
     @Override
@@ -787,8 +784,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
                 .zipWith(newValue)
                 .flatMap(o -> {
                     int hash = hash(key);
-                    boolean f = segmentFor(hash).replace(key, hash, o.getT1(), o.getT2());
-                    return Mono.just(f);
+                    return segmentFor(hash).replace(key, hash, o.getT1(), o.getT2());
                 }).switchIfEmpty(Mono.just(false)).block();
 
         return Boolean.TRUE.equals(block);
@@ -802,8 +798,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {
                     int hash = hash(key);
-                    V oldValue = segmentFor(hash).replace(key, hash, v);
-                    return Mono.justOrEmpty(oldValue);
+                    return segmentFor(hash).replace(key, hash, v);
                 });
     }
 
