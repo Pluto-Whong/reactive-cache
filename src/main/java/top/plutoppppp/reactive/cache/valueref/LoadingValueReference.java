@@ -77,7 +77,9 @@ public class LoadingValueReference<K, V> implements ValueReference<K, V> {
             defer = defer.subscribeOn(scheduler);
         }
 
-        return defer.doOnNext(this::set)
+        return defer
+                .switchIfEmpty(Mono.fromRunnable(() -> this.set(null)))
+                .doOnNext(this::set)
                 .doOnError(this::setException);
     }
 

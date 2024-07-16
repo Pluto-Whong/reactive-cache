@@ -619,10 +619,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
         int hash = hash(checkNotNull(key));
         return segmentFor(hash).get(key, hash)
                 .doOnNext(v -> globalStatsCounter.recordHits(1))
-                .switchIfEmpty(Mono.defer(() -> {
-                    globalStatsCounter.recordMisses(1);
-                    return Mono.empty();
-                }));
+                .switchIfEmpty(Mono.fromRunnable(() -> globalStatsCounter.recordMisses(1)));
     }
 
     // Only becomes available in Java 8 when it's on the interface.
@@ -644,10 +641,9 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     Flux<Tuple2<K, V>> getAllPresent(Iterable<? extends K> keys) {
         return Flux.fromIterable(keys)
                 .flatMap(k -> get(k)
-                        .switchIfEmpty(Mono.defer(() -> {
-                            globalStatsCounter.recordMisses(1);
-                            return Mono.empty();
-                        })).doOnNext(v ->
+                        .switchIfEmpty(Mono.fromRunnable(() ->
+                                globalStatsCounter.recordMisses(1)
+                        )).doOnNext(v ->
                                 globalStatsCounter.recordHits(1)
                         ).flatMap(v ->
                                 Mono.just(Tuples.of(k, v))
@@ -805,7 +801,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     @Override
     public void clear() {
         for (ReactiveSegment<K, V> segment : segments) {
-            segment.clear();
+            segment.clear().block();
         }
     }
 

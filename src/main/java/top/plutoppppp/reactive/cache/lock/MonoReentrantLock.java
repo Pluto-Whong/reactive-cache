@@ -6,10 +6,9 @@ import reactor.core.scheduler.Schedulers;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -21,7 +20,7 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
     static final AtomicReferenceFieldUpdater<MonoReentrantLock, LockHolder> CURRENT_HOLDER =
             AtomicReferenceFieldUpdater.newUpdater(MonoReentrantLock.class, LockHolder.class, "currentHolder");
 
-    final ConcurrentLinkedDeque<LockHolder> subscriberDeque = new ConcurrentLinkedDeque<>();
+    final ConcurrentLinkedDeque<CacheLockSubscriber> subscriberDeque = new ConcurrentLinkedDeque<>();
 
     private boolean sameCurrentHolder(LockHolder chainHolder) {
         return chainHolder != null && chainHolder == currentHolder;
@@ -49,50 +48,54 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
         return -2;
     }
 
-    private void process(LockHolder holder) {
-        holder.actual.onNext(holder);
+    private void process(CoreSubscriber<? super LockHolder> actual, LockHolder holder) {
+        actual.onNext(holder);
     }
-
-    ConcurrentHashMap<Object, Boolean> alreadyMap = new ConcurrentHashMap<>();
 
     @Override
     public void subscribe(CoreSubscriber<? super LockHolder> actual) {
-        LockHolder willHolder = new LockHolder(this, actual);
+        LockHolder willHolder = new LockHolder();
+        this.subscribe(actual, willHolder);
+    }
 
-        if (tryAcquire(willHolder) < 0) {
-            this.add(willHolder);
+    private void subscribe(CoreSubscriber<? super LockHolder> actual, LockHolder lockHolder) {
+        if (tryAcquire(lockHolder) < 0) {
+            this.add(lockHolder, actual);
             this.tryNext();
         } else {
-            this.process(willHolder);
+            this.process(actual, lockHolder);
         }
     }
 
     private void tryNext() {
-        if (this.currentHolder != null) {
+        for (; ; ) {
+            if (this.currentHolder != null) {
+                return;
+            }
+
+            CacheLockSubscriber next = subscriberDeque.poll();
+            if (next == null) {
+                return;
+            }
+
+            if (tryAcquire(next.holder) < 0) {
+                // 没有抢到线程就再给塞回去
+                subscriberDeque.push(next);
+                continue;
+            }
+
+            Schedulers.parallel().schedule(() -> {
+                this.process(next.actual, next.holder);
+            });
+
             return;
         }
-
-        LockHolder nextHolder = subscriberDeque.poll();
-        if (nextHolder == null) {
-            return;
-        }
-
-        if (tryAcquire(nextHolder) < 0) {
-            // 没有抢到线程就再给塞回去
-            subscriberDeque.push(nextHolder);
-            return;
-        }
-
-        Schedulers.boundedElastic().schedule(() -> {
-            this.process(nextHolder);
-        });
     }
 
-    private void add(LockHolder toAdd) {
-        subscriberDeque.offer(toAdd);
+    private void add(LockHolder toAdd, CoreSubscriber<? super LockHolder> actual) {
+        CacheLockSubscriber s = new CacheLockSubscriber(toAdd, actual);
+        subscriberDeque.offer(s);
     }
-
-    LongAdder longAdder = new LongAdder();
 
     private void unlock(LockHolder lockHolder) {
         LockHolder currentHolder = this.currentHolder;
@@ -114,7 +117,7 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
         return this.lock(holder -> {
             syncBlock.accept(holder);
             return Mono.empty();
-        }, null);
+        });
     }
 
     public <R> Mono<R> lock(Function<? super LockHolder, ? extends Mono<? extends R>> syncBlock) {
@@ -122,11 +125,11 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
     }
 
     public <R> Mono<R> lock(Function<? super LockHolder, ? extends Mono<? extends R>> syncBlock, LockHolder chainHolder) {
-        if (tryAcquire(chainHolder) < 0) {
+        if (Objects.isNull(chainHolder)) {
             return this.flatMap(syncBlock);
         }
 
-        return Mono.just(chainHolder).flatMap(syncBlock);
+        return HolderMonoSource.newInstance(chainHolder).flatMap(syncBlock);
     }
 
     public boolean tryLock(Consumer<? super LockHolder> syncBlock) {
@@ -135,7 +138,7 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
 
     public boolean tryLock(Consumer<? super LockHolder> syncBlock, LockHolder chainHolder) {
         if (chainHolder == null) {
-            chainHolder = new LockHolder(this, null);
+            chainHolder = new LockHolder();
         }
 
         if (tryAcquire(chainHolder) < 0) {
@@ -150,20 +153,49 @@ public class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
         return this.sameCurrentHolder(chainHolder);
     }
 
-    public static final class LockHolder {
+    public final class LockHolder {
 
-        private final MonoReentrantLock lock;
-
-        private final CoreSubscriber<? super LockHolder> actual;
-
-        LockHolder(MonoReentrantLock lock, CoreSubscriber<? super LockHolder> actual) {
-            this.lock = lock;
-            this.actual = actual;
+        private LockHolder() {
         }
 
         public void unlock() {
-            lock.unlock(this);
+            lock().unlock(this);
         }
+
+        private MonoReentrantLock lock() {
+            return MonoReentrantLock.this;
+        }
+    }
+
+    private static final class HolderMonoSource extends Mono<LockHolder> {
+
+        private static Mono<LockHolder> newInstance(LockHolder holder) {
+            return onAssembly(new HolderMonoSource(holder));
+        }
+
+        private final LockHolder holder;
+
+        private HolderMonoSource(LockHolder holder) {
+            this.holder = Objects.requireNonNull(holder);
+        }
+
+        @Override
+        public void subscribe(CoreSubscriber<? super LockHolder> actual) {
+            holder.lock().subscribe(actual, holder);
+        }
+
+    }
+
+    private static final class CacheLockSubscriber {
+
+        private final LockHolder holder;
+        private final CoreSubscriber<? super LockHolder> actual;
+
+        CacheLockSubscriber(LockHolder holder, CoreSubscriber<? super LockHolder> actual) {
+            this.holder = Objects.requireNonNull(holder);
+            this.actual = Objects.requireNonNull(actual);
+        }
+
     }
 
 }

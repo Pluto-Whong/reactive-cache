@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -67,35 +68,47 @@ public class CorrectnessTestMain {
         LongAdder missCount = new LongAdder();
         LongAdder valueCount = new LongAdder();
 
+        final int concurrentCount = 32;
         long interval = 10L * 1000L;
-        for (int i = 0; i < 32; i++) {
+
+        CountDownLatch countDownLatch = new CountDownLatch(concurrentCount);
+        for (int i = 0; i < concurrentCount; i++) {
             Random randomInner = new Random(random.nextInt());
 
             executorService.submit(() -> {
                 long start = System.currentTimeMillis();
-                while (System.currentTimeMillis() - start < interval) {
-                    String key = keys[randomInner.nextInt(keys.length)];
-                    String value = RANDOM_MAP.get(key);
-                    cache.get(key)
-                            .onErrorResume(InvalidCacheLoadException.class, e -> {
-                                if (Objects.nonNull(value)) {
-                                    throw new IllegalStateException("key: " + key + " value: " + value + " v: InvalidCacheLoadException");
-                                }
-                                missCount.add(1);
-                                return Mono.empty();
-                            })
-                            .subscribe(v -> {
-                                if (!Objects.equals(value, v)) {
-                                    throw new IllegalStateException("key: " + key + " value: " + value + " v: " + v);
-                                }
-                                valueCount.add(1);
+                try {
+                    while (System.currentTimeMillis() - start < interval) {
+                        String key = keys[randomInner.nextInt(keys.length)];
+                        String value = RANDOM_MAP.get(key);
+                        cache.get(key)
+                                .onErrorResume(InvalidCacheLoadException.class, e -> {
+                                    if (Objects.nonNull(value)) {
+                                        throw new IllegalStateException("key: " + key + " value: " + value + " v: InvalidCacheLoadException");
+                                    }
+                                    missCount.add(1);
+                                    return Mono.empty();
+                                })
+                                .subscribe(v -> {
+                                    if (!Objects.equals(value, v)) {
+                                        throw new IllegalStateException("key: " + key + " value: " + value + " v: " + v);
+                                    }
+                                    valueCount.add(1);
 //                                    System.out.println("key: " + key + " value: " + value + " v: " + v);
-                            });
+                                });
+                    }
+                } finally {
+                    countDownLatch.countDown();
                 }
             });
         }
 
-        TimeUnit.MILLISECONDS.sleep(interval + 2000L);
+        long start = System.currentTimeMillis();
+        System.err.println(start);
+        countDownLatch.await();
+        long end = System.currentTimeMillis();
+        System.err.println(end);
+        System.err.println("totals: " + (end - start));
 
         System.out.println(cache.stats());
 

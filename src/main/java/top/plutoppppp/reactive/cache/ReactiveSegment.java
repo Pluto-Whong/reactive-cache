@@ -319,8 +319,6 @@ public class ReactiveSegment<K, V> {
             throw new AssertionError();
         }
 
-        checkState(!Thread.holdsLock(e), "Recursive load of: %s", key);
-        // don't consider expiration as we're concurrent with loading
         try {
             Mono<V> valueMono = Mono.create(sink -> valueReference.waitForValue(sink, map.loadingRestartScheduler));
             if (map.timeoutNanos > 0) {
@@ -1260,9 +1258,9 @@ public class ReactiveSegment<K, V> {
         });
     }
 
-    void clear() {
+    Mono<Void> clear() {
         if (count != 0) { // read-volatile
-            lock.lock(holder -> {
+            return lock.lock(holder -> {
                 try {
                     long now = map.ticker.read();
                     preWriteCleanup(now, holder);
@@ -1295,8 +1293,9 @@ public class ReactiveSegment<K, V> {
                     holder.unlock();
                     postWriteCleanup(holder);
                 }
-            }).subscribe();
+            });
         }
+        return Mono.empty();
     }
 
 

@@ -4,6 +4,7 @@ import top.plutoppppp.reactive.cache.ReactiveCacheLoader;
 import top.plutoppppp.reactive.cache.ReactiveLoadingCache;
 import top.plutoppppp.reactive.cache.exception.InvalidCacheLoadException;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -52,9 +53,9 @@ public class StressTestMain {
 
     public void main0(Map<String, String> map) throws Exception {
         ReactiveLoadingCache<String, String> cache = ReactiveCacheBuilder.newBuilder()
-                .initialCapacity(256)
-                .maximumSize(256)
-                .concurrencyLevel(16)
+                .initialCapacity(1024)
+                .maximumSize(1024)
+                .concurrencyLevel(64)
                 .expireAfterWrite(6, TimeUnit.SECONDS)
                 .refreshAfterWrite(5, TimeUnit.SECONDS)
                 .recordStats()
@@ -66,23 +67,41 @@ public class StressTestMain {
 
         LongAdder missCount = new LongAdder();
         LongAdder valueCount = new LongAdder();
+        LongAdder errorCount = new LongAdder();
         LongAdder totalCount = new LongAdder();
+        LongAdder getTotalCount = new LongAdder();
 
         AtomicInteger index = new AtomicInteger();
         AtomicLong lastTotalCount = new AtomicLong();
         ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
-        scheduledExecutorService.scheduleAtFixedRate(() -> {
-            long currentTotalCount = totalCount.longValue();
-            System.err.println(index.incrementAndGet() + " last: " + lastTotalCount.longValue() + " current: " + currentTotalCount + " qps: " + (currentTotalCount - lastTotalCount.get()));
-            lastTotalCount.set(currentTotalCount);
-        }, 0, 5, TimeUnit.SECONDS);
 
         final int concurrentCount = 32;
-        final long interval = 10L * 60L * 1000L;
+        final long interval = 120L * 1000L;
 
         CountDownLatch countDownLatch = new CountDownLatch(concurrentCount);
+
+        Runnable dataPrint = () -> {
+            long currentTotalCount = totalCount.longValue();
+            long valueC = valueCount.longValue();
+            long missC = missCount.longValue();
+            long errorC = errorCount.longValue();
+            System.err.println(index.incrementAndGet()
+                    + " last: " + lastTotalCount.longValue()
+                    + " current: " + currentTotalCount
+                    + " qps: " + (currentTotalCount - lastTotalCount.get())
+                    + " get: " + getTotalCount.longValue()
+                    + " countDownLatch: " + countDownLatch.getCount()
+                    + " valueC: " + valueC
+                    + " missC: " + missC
+                    + " errorC: " + errorC
+            );
+            lastTotalCount.set(currentTotalCount);
+        };
+        scheduledExecutorService.scheduleAtFixedRate(dataPrint, 0, 5, TimeUnit.SECONDS);
+
         for (int i = 0; i < concurrentCount; i++) {
-            Random randomInner = new Random(random.nextInt());
+            TimeUnit.MILLISECONDS.sleep(1 + random.nextInt(5));
+            Random randomInner = new Random();
 
             executorService.submit(() -> {
                 final long start = System.currentTimeMillis();
@@ -90,24 +109,33 @@ public class StressTestMain {
                     while (System.currentTimeMillis() - start < interval) {
                         String key = keys[randomInner.nextInt(keys.length)];
                         String value = RANDOM_MAP.get(key);
-                        cache.get(key)
+                        getTotalCount.add(1);
+                        String block = cache.get(key)
                                 .onErrorResume(InvalidCacheLoadException.class, e -> {
                                     if (Objects.nonNull(value)) {
-                                        throw new IllegalStateException("key: " + key + " value: " + value + " v: InvalidCacheLoadException");
+                                        new IllegalStateException("key: " + key + " value: " + value + " v: InvalidCacheLoadException").printStackTrace();
+                                        return Mono.empty();
                                     }
                                     missCount.add(1);
-                                    totalCount.add(1);
                                     return Mono.empty();
                                 })
-                                .subscribe(v -> {
-                                    if (!Objects.equals(value, v)) {
-                                        throw new IllegalStateException("key: " + key + " value: " + value + " v: " + v);
-                                    }
+                                .onErrorResume(e -> {
+                                    errorCount.add(1);
+                                    e.printStackTrace();
+                                    return Mono.empty();
+                                })
+                                .flatMap(v -> {
                                     valueCount.add(1);
-                                    totalCount.add(1);
-//                                    System.out.println("key: " + key + " value: " + value + " v: " + v);
-                                });
+                                    return Mono.just(v);
+                                })
+                                .block();
+                        if (Objects.nonNull(block) && !Objects.equals(value, block)) {
+                            throw new IllegalStateException("key: " + key + " value: " + value + " v: " + block);
+                        }
+                        totalCount.add(1);
                     }
+                } catch (Exception e) {
+                    e.printStackTrace();
                 } finally {
                     countDownLatch.countDown();
                 }
@@ -121,20 +149,24 @@ public class StressTestMain {
         System.out.println(missCount);
         System.out.println(valueCount);
 
+        dataPrint.run();
+
         executorService.shutdown();
         scheduledExecutorService.shutdown();
     }
 
     public Mono<String> loadValue(String key) {
-        try {
-            TimeUnit.MILLISECONDS.sleep(26);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-        return Mono.justOrEmpty(RANDOM_MAP.get(key));
+//        try {
+//            TimeUnit.MILLISECONDS.sleep(26);
+//        } catch (InterruptedException e) {
+//            throw new RuntimeException(e);
+//        }
+//        return Mono.justOrEmpty(RANDOM_MAP.get(key));
 
-//        return Mono.delay(Duration.ofMillis(26), Schedulers.boundedElastic())
-//                .flatMap(v -> Mono.justOrEmpty(RANDOM_MAP.get(key)));
+        return Mono
+//                .just(1)
+                .delay(Duration.ofMillis(3))
+                .flatMap(v -> Mono.justOrEmpty(RANDOM_MAP.get(key)));
     }
 
 }
