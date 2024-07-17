@@ -99,6 +99,8 @@ public final class ReactiveCacheBuilder<K, V> {
     /**
      * Constructs a new {@code CacheBuilder} instance with default settings, including strong keys,
      * strong values, and no automatic eviction of any kind.
+     *
+     * @return ReactiveCacheBuilder
      */
     public static ReactiveCacheBuilder<Object, Object> newBuilder() {
         return new ReactiveCacheBuilder<>();
@@ -162,6 +164,7 @@ public final class ReactiveCacheBuilder<K, V> {
      * avoids the need for expensive resizing operations later, but setting this value unnecessarily
      * high wastes memory.
      *
+     * @param initialCapacity initial capacity
      * @return this {@code CacheBuilder} instance (for chaining)
      * @throws IllegalArgumentException if {@code initialCapacity} is negative
      * @throws IllegalStateException    if an initial capacity was already set
@@ -207,6 +210,7 @@ public final class ReactiveCacheBuilder<K, V> {
      * <p>Note that future implementations may abandon segment locking in favor of more advanced
      * concurrency controls.
      *
+     * @param concurrencyLevel concurrency level
      * @return this {@code CacheBuilder} instance (for chaining)
      * @throws IllegalArgumentException if {@code concurrencyLevel} is nonpositive
      * @throws IllegalStateException    if a concurrency level was already set
@@ -315,6 +319,8 @@ public final class ReactiveCacheBuilder<K, V> {
      * {@link ClassCastException} at some <i>undefined</i> point in the future.
      *
      * @param weigher the weigher to use in calculating the weight of cache entries
+     * @param <K1>    key type
+     * @param <V1>    value type
      * @return this {@code CacheBuilder} instance (for chaining)
      * @throws IllegalArgumentException if {@code size} is negative
      * @throws IllegalStateException    if a maximum size was already set

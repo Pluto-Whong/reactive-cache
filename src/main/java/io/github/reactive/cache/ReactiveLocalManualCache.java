@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
 
 public class ReactiveLocalManualCache<K, V> implements ReactiveCache<K, V> {
 
@@ -32,7 +31,7 @@ public class ReactiveLocalManualCache<K, V> implements ReactiveCache<K, V> {
     }
 
     @Override
-    public Mono<V> get(K key, final Callable<? extends Mono<V>> valueLoader) throws ExecutionException {
+    public Mono<V> get(K key, final Callable<? extends Mono<V>> valueLoader) {
         Objects.requireNonNull(valueLoader);
         return localCache.get(key, new ReactiveCacheLoader<K, V>() {
             @Override

@@ -14,7 +14,7 @@ import java.util.Objects;
  * </p>
  *
  * <pre>
- * AdditionalCacheKey<String> key = AdditionalCacheKey.of("demo",
+ * AdditionalCacheKey&lt;String&gt; key = AdditionalCacheKey.of("demo",
  *         "av1", "a",
  *         "av2", "b"
  * );
@@ -45,9 +45,9 @@ public class AdditionalCacheKey<T> {
     /**
      * @param value            实际值
      * @param additionalValues 附加值，需要开发者根据自身的需求按对传入，按下标从0开始，偶数位置key，奇数位置为value，
-     *                         若 {@param additionalValues#length} 为奇数，则最后的值会忽略
-     * @param <T>
-     * @return
+     *                         若 additionalValues#length 为奇数，则最后的值会忽略
+     * @param <T>              原始值类型
+     * @return new instance
      */
     public static <T> AdditionalCacheKey<T> of(T value, Object... additionalValues) {
         AdditionalCacheKey<T> result = new AdditionalCacheKey<>(value);
@@ -66,8 +66,8 @@ public class AdditionalCacheKey<T> {
     /**
      * @param value            实际值
      * @param additionalValues 附加值，将会用 {@link Object#getClass()} 表示作为参数key
-     * @param <T>
-     * @return
+     * @param <T>              原始值类型
+     * @return new instance
      */
     public static <T> AdditionalCacheKey<T> of4Class(T value, Object... additionalValues) {
         AdditionalCacheKey<T> result = new AdditionalCacheKey<>(value);

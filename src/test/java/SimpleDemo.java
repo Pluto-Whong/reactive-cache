@@ -1,10 +1,10 @@
-import com.sun.org.slf4j.internal.Logger;
-import com.sun.org.slf4j.internal.LoggerFactory;
-import reactor.core.publisher.Mono;
 import io.github.reactive.cache.ReactiveCacheBuilder;
 import io.github.reactive.cache.ReactiveCacheLoader;
 import io.github.reactive.cache.ReactiveLoadingCache;
 import io.github.reactive.cache.exception.InvalidCacheLoadException;
+import reactor.core.publisher.Mono;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class SimpleDemo {
 
-    private static final Logger log = LoggerFactory.getLogger(SimpleDemo.class);
+    private static final Logger log = Loggers.getLogger(SimpleDemo.class);
 
     // 代表空值对象，这里我们是用String模拟的，所以还请理解自动转义为你要返回的对象
     public static final String EMPTY_VALUE = "";

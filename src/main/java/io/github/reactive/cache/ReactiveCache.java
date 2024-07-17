@@ -8,7 +8,6 @@ import reactor.util.function.Tuple2;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
 
 public interface ReactiveCache<K, V> {
 
@@ -17,57 +16,56 @@ public interface ReactiveCache<K, V> {
      * 不存在直接返回 {@link Mono#empty()}
      * 不会去尝试拉取值
      *
-     * @param key
-     * @return
+     * @param key 缓存key
+     * @return 值
      */
     Mono<V> getIfPresent(K key);
 
     /**
-     * 获得值，若不存在则通过 {@param loader} 拉取
+     * 获得值，若不存在则通过 loader 拉取
      *
-     * @param key
-     * @param loader
-     * @return
-     * @throws ExecutionException
+     * @param key    缓存key
+     * @param loader 加载方法
+     * @return 值
      */
-    Mono<V> get(K key, Callable<? extends Mono<V>> loader) throws ExecutionException;
+    Mono<V> get(K key, Callable<? extends Mono<V>> loader);
 
     /**
      * 根据key获取所有值
      *
-     * @param keys
-     * @return
+     * @param keys 缓存key
+     * @return 目标值集合
      */
     Flux<Tuple2<K, V>> getAllPresent(Iterable<? extends K> keys);
 
     /**
      * 设置值
      *
-     * @param key
-     * @param value
-     * @return
+     * @param key   缓存key
+     * @param value 替换值
+     * @return 旧值
      */
     Mono<V> put(K key, Mono<V> value);
 
     /**
      * 批量设置值
      *
-     * @param m
+     * @param m 来源map
      */
     void putAll(Map<? extends K, ? extends Mono<V>> m);
 
     /**
      * 使某个值失效
      *
-     * @param key
-     * @return
+     * @param key 目标key
+     * @return 旧值
      */
     Mono<V> invalidate(Object key);
 
     /**
      * 批量失效
      *
-     * @param keys
+     * @param keys 目标key
      */
     void invalidateAll(Iterable<?> keys);
 
@@ -79,14 +77,14 @@ public interface ReactiveCache<K, V> {
     /**
      * 大小
      *
-     * @return
+     * @return size
      */
     long size();
 
     /**
      * 缓存状态
      *
-     * @return
+     * @return CacheStats
      */
     CacheStats stats();
 

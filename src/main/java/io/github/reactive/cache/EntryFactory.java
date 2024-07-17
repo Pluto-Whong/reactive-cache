@@ -152,6 +152,9 @@ public enum EntryFactory {
      * @param key     of the entry
      * @param hash    of the key
      * @param next    entry in the same bucket
+     * @param <K>     entry key type
+     * @param <V>     entry value type
+     * @return ReferenceEntry
      */
     public abstract <K, V> ReferenceEntry<K, V> newEntry(
             ReactiveSegment<K, V> segment, K key, int hash, ReferenceEntry<K, V> next);
@@ -159,8 +162,12 @@ public enum EntryFactory {
     /**
      * Copies an entry, assigning it a new {@code next} entry.
      *
+     * @param segment  segment
      * @param original the entry to copy
      * @param newNext  entry in the same bucket
+     * @param <K>      entry key type
+     * @param <V>      entry key type
+     * @return ReferenceEntry
      */
     // Guarded By Segment.this
     public <K, V> ReferenceEntry<K, V> copyEntry(

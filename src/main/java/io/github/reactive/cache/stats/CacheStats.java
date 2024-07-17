@@ -45,6 +45,8 @@ public final class CacheStats {
     /**
      * Returns the number of times {@link ReactiveCache} lookup methods have returned either a cached or
      * uncached value. This is defined as {@code hitCount + missCount}.
+     *
+     * @return long
      */
     public long requestCount() {
         return hitCount + missCount;
@@ -52,6 +54,8 @@ public final class CacheStats {
 
     /**
      * Returns the number of times {@link ReactiveCache} lookup methods have returned a cached value.
+     *
+     * @return long
      */
     public long hitCount() {
         return hitCount;
@@ -61,6 +65,8 @@ public final class CacheStats {
      * Returns the ratio of cache requests which were hits. This is defined as
      * {@code hitCount / requestCount}, or {@code 1.0} when {@code requestCount == 0}. Note that
      * {@code hitRate + missRate =~ 1.0}.
+     *
+     * @return double
      */
     public double hitRate() {
         long requestCount = requestCount();
@@ -72,6 +78,8 @@ public final class CacheStats {
      * loaded) value, or null. Multiple concurrent calls to {@link ReactiveCache} lookup methods on an absent
      * value can result in multiple misses, all returning the results of a single cache load
      * operation.
+     *
+     * @return long
      */
     public long missCount() {
         return missCount;
@@ -85,6 +93,8 @@ public final class CacheStats {
      * which waited for other threads to finish loading. It is thus the case that
      * {@code missCount &gt;= loadSuccessCount + loadExceptionCount}. Multiple concurrent misses for
      * the same key will result in a single load operation.
+     *
+     * @return long
      */
     public double missRate() {
         long requestCount = requestCount();
@@ -95,6 +105,8 @@ public final class CacheStats {
      * Returns the total number of times that {@link ReactiveCache} lookup methods attempted to load new
      * values. This includes both successful load operations, as well as those that threw exceptions.
      * This is defined as {@code loadSuccessCount + loadExceptionCount}.
+     *
+     * @return long
      */
     public long loadCount() {
         return loadSuccessCount + loadExceptionCount;
@@ -109,6 +121,8 @@ public final class CacheStats {
      * load occurs as a result of a refresh or if the cache loader returned more items than was
      * requested. {@code missCount} may also be incremented not in conjunction with this (nor
      * {@link #loadExceptionCount}) on calls to {@code getIfPresent}.
+     *
+     * @return long
      */
     public long loadSuccessCount() {
         return loadSuccessCount;
@@ -123,6 +137,8 @@ public final class CacheStats {
      * occurs as a result of a refresh or if the cache loader returned more items than was requested.
      * {@code missCount} may also be incremented not in conjunction with this (nor
      * {@link #loadSuccessCount}) on calls to {@code getIfPresent}.
+     *
+     * @return long
      */
     public long loadExceptionCount() {
         return loadExceptionCount;
@@ -132,6 +148,8 @@ public final class CacheStats {
      * Returns the ratio of cache loading attempts which threw exceptions. This is defined as
      * {@code loadExceptionCount / (loadSuccessCount + loadExceptionCount)}, or {@code 0.0} when
      * {@code loadSuccessCount + loadExceptionCount == 0}.
+     *
+     * @return double
      */
     public double loadExceptionRate() {
         long totalLoadCount = loadSuccessCount + loadExceptionCount;
@@ -142,6 +160,8 @@ public final class CacheStats {
      * Returns the total number of nanoseconds the cache has spent loading new values. This can be
      * used to calculate the miss penalty. This value is increased every time {@code loadSuccessCount}
      * or {@code loadExceptionCount} is incremented.
+     *
+     * @return long
      */
     public long totalLoadTime() {
         return totalLoadTime;
@@ -150,6 +170,8 @@ public final class CacheStats {
     /**
      * Returns the average time spent loading new values. This is defined as
      * {@code totalLoadTime / (loadSuccessCount + loadExceptionCount)}.
+     *
+     * @return double
      */
     public double averageLoadPenalty() {
         long totalLoadCount = loadSuccessCount + loadExceptionCount;
@@ -159,6 +181,8 @@ public final class CacheStats {
     /**
      * Returns the number of times an entry has been evicted. This count does not include manual
      * {@linkplain ReactiveCache#invalidate invalidations}.
+     *
+     * @return long
      */
     public long evictionCount() {
         return evictionCount;
@@ -168,6 +192,8 @@ public final class CacheStats {
      * Returns a new {@code CacheStats} representing the difference between this {@code CacheStats}
      * and {@code other}. Negative values, which aren't supported by {@code CacheStats} will be
      * rounded up to zero.
+     *
+     * @return CacheStatus
      */
     public CacheStats minus(CacheStats other) {
         return new CacheStats(
@@ -183,7 +209,7 @@ public final class CacheStats {
      * Returns a new {@code CacheStats} representing the sum of this {@code CacheStats} and
      * {@code other}.
      *
-     * @since 11.0
+     * @return CacheStatus
      */
     public CacheStats plus(CacheStats other) {
         return new CacheStats(
