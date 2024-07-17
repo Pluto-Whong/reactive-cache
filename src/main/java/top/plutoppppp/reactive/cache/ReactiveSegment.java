@@ -26,7 +26,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static top.plutoppppp.reactive.cache.ReactiveLocalCache.*;
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
 import static top.plutoppppp.reactive.cache.common.Assert.checkState;
 
 /**
@@ -124,7 +123,7 @@ public class ReactiveSegment<K, V> {
             StatsCounter statsCounter) {
         this.map = map;
         this.maxSegmentWeight = maxSegmentWeight;
-        this.statsCounter = checkNotNull(statsCounter);
+        this.statsCounter = Objects.requireNonNull(statsCounter);
         initTable(newEntryArray(initialCapacity));
 
         keyReferenceQueue = map.usesKeyReferences() ? new ReferenceQueue<>() : null;
@@ -162,7 +161,7 @@ public class ReactiveSegment<K, V> {
 
 
     ReferenceEntry<K, V> newEntry(K key, int hash, ReferenceEntry<K, V> next) {
-        return map.entryFactory.newEntry(this, checkNotNull(key), hash, next);
+        return map.entryFactory.newEntry(this, Objects.requireNonNull(key), hash, next);
     }
 
     /**
@@ -205,8 +204,8 @@ public class ReactiveSegment<K, V> {
     // loading
 
     Mono<V> get(K key, int hash, ReactiveCacheLoader<? super K, V> loader) {
-        checkNotNull(key);
-        checkNotNull(loader);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(loader);
         try {
             if (count != 0) { // read-volatile
                 // don't call getLiveEntry, which would ignore loading values
@@ -406,9 +405,9 @@ public class ReactiveSegment<K, V> {
      */
     void refresh(K key, int hash, ReactiveCacheLoader<? super K, V> loader, boolean checkTime) {
         insertLoadingValueReference(key, hash, checkTime)
-                .subscribe(loadingValueReference -> {
-                    loadAsync(key, hash, loadingValueReference, loader);
-                });
+                .subscribe(loadingValueReference ->
+                        loadAsync(key, hash, loadingValueReference, loader)
+                );
     }
 
     /**

@@ -4,14 +4,6 @@ import top.plutoppppp.reactive.cache.common.Equivalence;
 import top.plutoppppp.reactive.cache.entry.ReferenceEntry;
 import top.plutoppppp.reactive.cache.valueref.*;
 
-/**
- * <p>
- *
- * </p>
- *
- * @author wangmin07@hotmail.com
- * @since 2024/7/3 15:57
- */
 public enum Strength {
     STRONG {
         @Override

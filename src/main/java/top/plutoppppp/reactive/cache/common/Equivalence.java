@@ -19,8 +19,6 @@ import java.io.Serializable;
 import java.util.Objects;
 import java.util.function.Predicate;
 
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
-
 
 /**
  * A strategy for determining whether two instances are considered equivalent. Examples of
@@ -151,7 +149,7 @@ public abstract class Equivalence<T> {
         private final T reference;
 
         private Wrapper(Equivalence<? super T> equivalence, T reference) {
-            this.equivalence = checkNotNull(equivalence);
+            this.equivalence = Objects.requireNonNull(equivalence);
             this.reference = reference;
         }
 
@@ -226,7 +224,7 @@ public abstract class Equivalence<T> {
         private final T target;
 
         EquivalentToPredicate(Equivalence<T> equivalence, T target) {
-            this.equivalence = checkNotNull(equivalence);
+            this.equivalence = Objects.requireNonNull(equivalence);
             this.target = target;
         }
 

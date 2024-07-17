@@ -24,7 +24,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static top.plutoppppp.reactive.cache.ReactiveCacheBuilder.UNSET_INT;
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
 
 public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>> {
 
@@ -496,7 +495,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
      * Returns true if the entry has expired.
      */
     boolean isExpired(ReferenceEntry<K, V> entry, long now) {
-        checkNotNull(entry);
+        Objects.requireNonNull(entry);
         if (expiresAfterAccess() && (now - entry.getAccessTime() >= expireAfterAccessNanos)) {
             return true;
         }
@@ -616,7 +615,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     }
 
     public Mono<V> getIfPresent(K key) {
-        int hash = hash(checkNotNull(key));
+        int hash = hash(Objects.requireNonNull(key));
         return segmentFor(hash).get(key, hash)
                 .doOnNext(v -> globalStatsCounter.recordHits(1))
                 .switchIfEmpty(Mono.fromRunnable(() -> globalStatsCounter.recordMisses(1)));
@@ -630,7 +629,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     }
 
     Mono<V> get(K key, ReactiveCacheLoader<? super K, V> loader) {
-        int hash = hash(checkNotNull(key));
+        int hash = hash(Objects.requireNonNull(key));
         return segmentFor(hash).get(key, hash, loader);
     }
 
@@ -665,7 +664,7 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
     }
 
     void refresh(K key) {
-        int hash = hash(checkNotNull(key));
+        int hash = hash(Objects.requireNonNull(key));
         segmentFor(hash).refresh(key, hash, defaultLoader, false);
     }
 
@@ -721,8 +720,8 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
 
     @Override
     public Mono<V> put(K key, Mono<V> value) {
-        checkNotNull(key);
-        checkNotNull(value);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(value);
 
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {
@@ -733,8 +732,8 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
 
     @Override
     public Mono<V> putIfAbsent(K key, Mono<V> value) {
-        checkNotNull(key);
-        checkNotNull(value);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(value);
 
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {
@@ -770,8 +769,8 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
 
     @Override
     public boolean replace(K key, Mono<V> oldValue, Mono<V> newValue) {
-        checkNotNull(key);
-        checkNotNull(newValue);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(newValue);
         if (oldValue == null) {
             return false;
         }
@@ -788,8 +787,8 @@ public final class ReactiveLocalCache<K, V> implements ConcurrentMap<K, Mono<V>>
 
     @Override
     public Mono<V> replace(K key, Mono<V> value) {
-        checkNotNull(key);
-        checkNotNull(value);
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(value);
 
         return value.switchIfEmpty(Mono.error(IllegalArgumentException::new))
                 .flatMap(v -> {

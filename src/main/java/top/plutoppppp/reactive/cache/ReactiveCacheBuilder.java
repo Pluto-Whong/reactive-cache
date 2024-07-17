@@ -21,7 +21,8 @@ import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static top.plutoppppp.reactive.cache.common.Assert.*;
+import static top.plutoppppp.reactive.cache.common.Assert.checkArgument;
+import static top.plutoppppp.reactive.cache.common.Assert.checkState;
 
 public final class ReactiveCacheBuilder<K, V> {
 
@@ -61,7 +62,7 @@ public final class ReactiveCacheBuilder<K, V> {
     };
 
     static final Scheduler DEFAULT_TIMEOUT_SCHEDULER = Schedulers.parallel();
-    static final Scheduler DEFAULT_LOADING_RESTART_SCHEDULER = null;
+    static final Scheduler DEFAULT_LOADING_RESTART_SCHEDULER = Schedulers.parallel();
 
     public static final int UNSET_INT = -1;
 
@@ -125,7 +126,7 @@ public final class ReactiveCacheBuilder<K, V> {
     // To be supported
     ReactiveCacheBuilder<K, V> keyEquivalence(Equivalence<Object> equivalence) {
         checkState(keyEquivalence == null, "key equivalence was already set to %s", keyEquivalence);
-        keyEquivalence = checkNotNull(equivalence);
+        keyEquivalence = Objects.requireNonNull(equivalence);
         return this;
     }
 
@@ -146,7 +147,7 @@ public final class ReactiveCacheBuilder<K, V> {
     ReactiveCacheBuilder<K, V> valueEquivalence(Equivalence<Object> equivalence) {
         checkState(
                 valueEquivalence == null, "value equivalence was already set to %s", valueEquivalence);
-        this.valueEquivalence = checkNotNull(equivalence);
+        this.valueEquivalence = Objects.requireNonNull(equivalence);
         return this;
     }
 
@@ -326,14 +327,14 @@ public final class ReactiveCacheBuilder<K, V> {
         if (strictParsing) {
             checkState(
                     this.maximumSize == UNSET_INT,
-                    "weigher can not be combined with maximum size",
+                    "weigher can not be combined with maximum size: %s",
                     this.maximumSize);
         }
 
         // safely limiting the kinds of caches this can produce
         @SuppressWarnings("unchecked")
         ReactiveCacheBuilder<K1, V1> me = (ReactiveCacheBuilder<K1, V1>) this;
-        me.weigher = checkNotNull(weigher);
+        me.weigher = Objects.requireNonNull(weigher);
         return me;
     }
 
@@ -371,7 +372,7 @@ public final class ReactiveCacheBuilder<K, V> {
 
     ReactiveCacheBuilder<K, V> setKeyStrength(Strength strength) {
         checkState(keyStrength == null, "Key strength was already set to %s", keyStrength);
-        keyStrength = checkNotNull(strength);
+        keyStrength = Objects.requireNonNull(strength);
         return this;
     }
 
@@ -428,7 +429,7 @@ public final class ReactiveCacheBuilder<K, V> {
 
     ReactiveCacheBuilder<K, V> setValueStrength(Strength strength) {
         checkState(valueStrength == null, "Value strength was already set to %s", valueStrength);
-        valueStrength = checkNotNull(strength);
+        valueStrength = Objects.requireNonNull(strength);
         return this;
     }
 
@@ -509,7 +510,7 @@ public final class ReactiveCacheBuilder<K, V> {
 
     // To be supported (synchronously).
     public ReactiveCacheBuilder<K, V> refreshAfterWrite(long duration, TimeUnit unit) {
-        checkNotNull(unit);
+        Objects.requireNonNull(unit);
         checkState(refreshNanos == UNSET_INT, "refresh was already set to %s ns", refreshNanos);
         checkArgument(duration > 0, "duration must be positive: %s %s", duration, unit);
         this.refreshNanos = unit.toNanos(duration);
@@ -528,7 +529,7 @@ public final class ReactiveCacheBuilder<K, V> {
      * @return
      */
     public ReactiveCacheBuilder<K, V> loadingTimeout(long duration, TimeUnit unit) {
-        checkNotNull(unit);
+        Objects.requireNonNull(unit);
         checkState(timeoutNanos == UNSET_INT, "refresh was already set to %s ns", timeoutNanos);
         checkArgument(duration > 0, "duration must be positive: %s %s", duration, unit);
         this.timeoutNanos = unit.toNanos(duration);
@@ -546,7 +547,7 @@ public final class ReactiveCacheBuilder<K, V> {
      * @return
      */
     public ReactiveCacheBuilder<K, V> timeoutScheduler(Scheduler scheduler) {
-        checkNotNull(scheduler);
+        Objects.requireNonNull(scheduler);
         checkState(Objects.isNull(timeoutScheduler), "timeout scheduler was already set");
         this.timeoutScheduler = scheduler;
         return this;
@@ -563,7 +564,7 @@ public final class ReactiveCacheBuilder<K, V> {
      * @return
      */
     public ReactiveCacheBuilder<K, V> loadingRestartScheduler(Scheduler scheduler) {
-        checkNotNull(scheduler);
+        Objects.requireNonNull(scheduler);
         checkState(Objects.isNull(loadingRestartScheduler), "loading restart scheduler was already set");
         this.loadingRestartScheduler = scheduler;
         return this;
@@ -585,7 +586,7 @@ public final class ReactiveCacheBuilder<K, V> {
      */
     public ReactiveCacheBuilder<K, V> ticker(Ticker ticker) {
         checkState(this.ticker == null);
-        this.ticker = checkNotNull(ticker);
+        this.ticker = Objects.requireNonNull(ticker);
         return this;
     }
 
@@ -624,7 +625,7 @@ public final class ReactiveCacheBuilder<K, V> {
         // safely limiting the kinds of caches this can produce
         @SuppressWarnings("unchecked")
         ReactiveCacheBuilder<K1, V1> me = (ReactiveCacheBuilder<K1, V1>) this;
-        me.removalListener = checkNotNull(listener);
+        me.removalListener = Objects.requireNonNull(listener);
         return me;
     }
 

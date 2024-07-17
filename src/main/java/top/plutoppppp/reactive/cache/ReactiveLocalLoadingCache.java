@@ -2,12 +2,12 @@ package top.plutoppppp.reactive.cache;
 
 import reactor.core.publisher.Mono;
 
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
+import java.util.Objects;
 
 public class ReactiveLocalLoadingCache<K, V> extends ReactiveLocalManualCache<K, V> implements ReactiveLoadingCache<K, V> {
 
     ReactiveLocalLoadingCache(ReactiveCacheBuilder<? super K, ? super V> builder, ReactiveCacheLoader<? super K, V> loader) {
-        super(new ReactiveLocalCache<>(builder, checkNotNull(loader)));
+        super(new ReactiveLocalCache<>(builder, Objects.requireNonNull(loader)));
     }
 
     // LoadingCache methods

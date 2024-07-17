@@ -2,10 +2,10 @@ package top.plutoppppp.reactive.cache.common;
 
 
 import java.util.Locale;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import static java.util.concurrent.TimeUnit.*;
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
 import static top.plutoppppp.reactive.cache.common.Assert.checkState;
 
 /**
@@ -99,7 +99,7 @@ public final class Stopwatch {
     }
 
     Stopwatch(Ticker ticker) {
-        this.ticker = checkNotNull(ticker, "ticker");
+        this.ticker = Objects.requireNonNull(ticker, "ticker");
     }
 
     /**

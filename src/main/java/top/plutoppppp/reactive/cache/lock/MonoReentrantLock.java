@@ -124,9 +124,9 @@ public final class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> 
                 continue;
             }
 
-            nextScheduler.schedule(() -> {
-                this.process(next.actual, next.holder);
-            });
+            nextScheduler.schedule(() ->
+                    this.process(next.actual, next.holder)
+            );
 
             return;
         }

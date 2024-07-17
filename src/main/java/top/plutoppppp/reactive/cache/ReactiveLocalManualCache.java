@@ -7,11 +7,10 @@ import top.plutoppppp.reactive.cache.stats.CacheStats;
 import top.plutoppppp.reactive.cache.stats.SimpleStatsCounter;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
-
-import static top.plutoppppp.reactive.cache.common.Assert.checkNotNull;
 
 public class ReactiveLocalManualCache<K, V> implements ReactiveCache<K, V> {
 
@@ -34,7 +33,7 @@ public class ReactiveLocalManualCache<K, V> implements ReactiveCache<K, V> {
 
     @Override
     public Mono<V> get(K key, final Callable<? extends Mono<V>> valueLoader) throws ExecutionException {
-        checkNotNull(valueLoader);
+        Objects.requireNonNull(valueLoader);
         return localCache.get(key, new ReactiveCacheLoader<K, V>() {
             @Override
             public Mono<V> load(K key, V previousValue) {
@@ -64,7 +63,7 @@ public class ReactiveLocalManualCache<K, V> implements ReactiveCache<K, V> {
 
     @Override
     public Mono<V> invalidate(Object key) {
-        checkNotNull(key);
+        Objects.requireNonNull(key);
         return localCache.remove(key);
     }
 
