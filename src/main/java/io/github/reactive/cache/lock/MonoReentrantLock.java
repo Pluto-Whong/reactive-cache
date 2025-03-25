@@ -17,17 +17,26 @@ import java.util.function.Function;
 public final class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> {
     private static final Logger LOGGER = Loggers.getLogger(MonoReentrantLock.class);
 
+    boolean fair;
+
     // 锁实现的关键字段，currentHolder作为锁标识，state标示重入持有的数量
     int state;
     volatile LockHolder currentHolder;
-    static final AtomicReferenceFieldUpdater<MonoReentrantLock, LockHolder> CURRENT_HOLDER =
-            AtomicReferenceFieldUpdater.newUpdater(MonoReentrantLock.class, LockHolder.class, "currentHolder");
+    static final AtomicReferenceFieldUpdater<MonoReentrantLock, LockHolder> CURRENT_HOLDER = AtomicReferenceFieldUpdater.newUpdater(MonoReentrantLock.class, LockHolder.class, "currentHolder");
 
     // 等待执行队列
     final ConcurrentLinkedDeque<CacheLockSubscriber> subscriberDeque = new ConcurrentLinkedDeque<>();
 
     // 唤起下一个执行任务时，为了防止出现 执行栈超出最大限度 以及 当前链路线程被其他唤起链路长时间占用 的问题，使用线程池进行链路唤醒
     private Scheduler nextScheduler = Schedulers.parallel();
+
+    public MonoReentrantLock() {
+        this(false);
+    }
+
+    public MonoReentrantLock(boolean fair) {
+        this.fair = fair;
+    }
 
     /**
      * 触发下一个执行任务时，所使用的线程池
@@ -91,12 +100,16 @@ public final class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> 
     }
 
     private void subscribe(CoreSubscriber<? super LockHolder> actual, LockHolder lockHolder) {
-        if (tryAcquire(lockHolder) < 0) {
+        if ((fair && hasQueue()) || tryAcquire(lockHolder) < 0) {
             this.add(lockHolder, actual);
             this.tryNext();
         } else {
             this.process(actual, lockHolder);
         }
+    }
+
+    private boolean hasQueue() {
+        return !subscriberDeque.isEmpty();
     }
 
     private void add(LockHolder toAdd, CoreSubscriber<? super LockHolder> actual) {
@@ -124,9 +137,7 @@ public final class MonoReentrantLock extends Mono<MonoReentrantLock.LockHolder> 
                 continue;
             }
 
-            nextScheduler.schedule(() ->
-                    this.process(next.actual, next.holder)
-            );
+            nextScheduler.schedule(() -> this.process(next.actual, next.holder));
 
             return;
         }
